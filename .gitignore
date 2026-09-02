@@ -1,0 +1,6 @@
+/ssh-mcp
+/ssh-mcp.exe
+*.test
+coverage.out
+/dist/
+/.tmp-gocache/

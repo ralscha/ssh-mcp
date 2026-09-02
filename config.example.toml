@@ -1,0 +1,94 @@
+[defaults]
+defaultProfile = "dev"
+commandTimeoutMs = 60000
+connectTimeoutMs = 20000
+transferTimeoutMs = 60000
+commandMaxChars = 5000
+commandMaxOutputBytes = 1048576
+maxTransferBytes = 10485760
+hostKeyMode = "strict"
+knownHostsFile = "~/.ssh/known_hosts"
+approvalMode = "risky" # never, risky, or always
+auditLog = "~/.config/ssh-mcp/audit.jsonl"
+auditRedact = ["(?i)my-company-secret-[a-z0-9]+"]
+jobStateFile = "~/.config/ssh-mcp/jobs.json"
+jobRetentionMs = 86400000
+maxJobs = 100
+
+# Profiles may opt into values from OpenSSH config. importSSHHosts creates
+# normal profiles for exact aliases; ProxyJump aliases are imported as
+# jump-only profiles automatically.
+sshConfigFile = "~/.ssh/config"
+# importSSHHosts = ["dev-from-ssh-config"]
+
+# Optional Streamable HTTP transport. Stdio remains the default when disabled.
+[http]
+enabled = false
+listen = "127.0.0.1:8080"
+path = "/mcp"
+authMode = "token" # token or oauth
+tokenEnv = "SSH_MCP_HTTP_TOKEN"
+allowedOrigins = ["https://your-mcp-client.example"]
+maxRequestBytes = 16777216 # increase if maxTransferBytes requires larger base64 requests
+
+# Non-loopback listeners require TLS.
+# tlsCertFile = "C:/certs/ssh-mcp.crt"
+# tlsKeyFile = "C:/certs/ssh-mcp.key"
+
+# OAuth resource-server mode validates bearer tokens with RFC 7662
+# introspection and publishes RFC 9728 protected-resource metadata.
+# authMode = "oauth"
+# resourceUrl = "https://ssh-mcp.example/mcp"
+# authorizationServers = ["https://login.example"]
+# introspectionUrl = "https://login.example/oauth2/introspect"
+# oauthClientIdEnv = "SSH_MCP_OAUTH_CLIENT_ID"
+# oauthClientSecretEnv = "SSH_MCP_OAUTH_CLIENT_SECRET"
+# requiredScopes = ["ssh:connect"]
+# audience = "https://ssh-mcp.example/mcp"
+
+[[profiles]]
+name = "dev"
+host = "192.0.2.10"
+port = 22
+user = "deploy"
+auth = "key"
+keyRef = "~/.ssh/id_ed25519"
+# For auth="agent", optionally select exactly one Pageant/OpenSSH-agent key:
+# agentKeyFingerprint = "SHA256:base64Fingerprint"
+workdir = "/srv/app"
+readOnly = false
+# Root accounts and an empty arbitrary-command allowlist both require explicit
+# opt-in. Prefer a dedicated unprivileged account and narrow allowedCommands.
+# allowRoot = true
+# allowUnrestrictedCommands = true
+# proxyJump = "bastion-profile"
+
+# Optional regex policy. A non-empty allowedCommands list becomes a whitelist.
+allowedCommands = ["^(ls|cat|git|docker|systemctl|tail)\\b", "^sudo\\s+systemctl\\b"]
+denyCommands = ["^terraform\\s+destroy\\b"]
+
+# Template arguments are always POSIX-shell quoted. Templates still pass
+# through the normal command policy and may force an approval.
+[[profiles.commandTemplates]]
+name = "restart-service"
+description = "Restart one allowlisted systemd service"
+command = "sudo systemctl restart {{service}}"
+parameters = ["service"]
+requiresApproval = true
+
+[[profiles.commandTemplates]]
+name = "tail-log"
+description = "Read the last lines of a configured log path"
+command = "tail -n {{lines}} {{path}}"
+parameters = ["lines", "path"]
+readOnly = true
+
+# Instead of knownHostsFile, pin one exact server key:
+# trustedHostKey = "SHA256:base64FingerprintWithoutPadding"
+
+# Password authentication reads SSH_MCP_DEV_PASSWORD, then SSH_MCP_PASSWORD.
+# Private-key passphrases read SSH_MCP_DEV_KEY_PASSPHRASE, then
+# SSH_MCP_KEY_PASSPHRASE. Secrets are intentionally not accepted in this file.
+#
+# To use PuTTY Pageant on Windows, set auth = "agent" and omit keyRef. Pageant
+# is detected through its native Windows IPC; SSH_AUTH_SOCK is not required.

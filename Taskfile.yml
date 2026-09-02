@@ -1,0 +1,74 @@
+version: '3'
+
+tasks:
+  default:
+    desc: List all available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  format:
+    desc: Format all Go source files
+    cmds:
+      - go fix ./...
+      - go fmt ./...
+
+  build:
+    desc: Build the SSH MCP server
+    cmds:
+      - go build -o ssh-mcp{{exeExt}} ./cmd/ssh-mcp
+
+  test:
+    desc: Run all Go tests
+    cmds:
+      - go test ./...
+
+  check:
+    desc: Run tests, vet, vulnerability scanning, and a production build
+    cmds:
+      - go test ./...
+      - go vet ./...
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+      - go build ./...
+
+  lint:
+    desc: Run golangci-lint in a Docker container
+    cmds:
+      - docker run --rm -v {{toSlash .ROOT_DIR}}:/app -w /app golangci/golangci-lint:v2.13.1 golangci-lint run -v --timeout 5m
+
+  tag:
+    desc: Create a local git tag for a release
+    requires:
+      vars: [TAG]
+    preconditions:
+      - sh: 'case "{{.TAG}}" in v*) exit 0 ;; *) exit 1 ;; esac'
+        msg: TAG must start with v, for example v1.0.0
+      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 1; fi; exit 0'
+        msg: Tag already exists locally
+    cmds:
+      - git tag {{.TAG}}
+
+  push-tag:
+    desc: Push an existing git tag to GitHub
+    requires:
+      vars: [TAG]
+    preconditions:
+      - sh: 'case "{{.TAG}}" in v*) exit 0 ;; *) exit 1 ;; esac'
+        msg: TAG must start with v, for example v1.0.0
+      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 0; else exit 1; fi'
+        msg: Tag does not exist locally; run task tag first
+    cmds:
+      - git push origin {{.TAG}}
+
+  release-tag:
+    desc: Create and push a release tag
+    requires:
+      vars: [TAG]
+    preconditions:
+      - sh: 'case "{{.TAG}}" in v*) exit 0 ;; *) exit 1 ;; esac'
+        msg: TAG must start with v, for example v1.0.0
+      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 1; fi; exit 0'
+        msg: Tag already exists locally
+    cmds:
+      - git tag {{.TAG}}
+      - git push origin {{.TAG}}
