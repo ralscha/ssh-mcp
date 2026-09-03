@@ -282,7 +282,15 @@ user = "deploy"
 }
 
 func TestExampleConfigurationLoads(t *testing.T) {
-	path := filepath.Join("..", "..", "config.example.toml")
+	examplePath := filepath.Join("..", "..", "config.example.toml")
+	data, err := os.ReadFile(examplePath) //nolint:gosec // fixed repository test fixture
+	if err != nil {
+		t.Fatalf("read example configuration: %v", err)
+	}
+	// Repository files are normally checked out as 0644 on Unix, whereas a
+	// live configuration must be private. Exercise the example through the
+	// same owner-only fixture permissions expected from users.
+	path := writeConfig(t, string(data))
 	if _, err := Load(path); err != nil {
 		t.Fatalf("example configuration does not load: %v", err)
 	}
