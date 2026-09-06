@@ -21,6 +21,8 @@ import (
 
 type fakeBackend struct {
 	runs     atomic.Int32
+	reads    atomic.Int32
+	stats    atomic.Int32
 	lastRun  string
 	lastOpts remote.RunOptions
 	uploaded []byte
@@ -56,6 +58,7 @@ func (f *fakeBackend) Download(context.Context, *config.Profile, string, int64) 
 }
 
 func (f *fakeBackend) ReadRange(_ context.Context, _ *config.Profile, _ string, offset, length int64) ([]byte, error) {
+	f.reads.Add(1)
 	end := min(int64(len(f.download)), offset+length)
 	if offset > end {
 		return nil, nil
@@ -68,6 +71,7 @@ func (f *fakeBackend) ListDirectory(context.Context, *config.Profile, string, in
 }
 
 func (f *fakeBackend) Stat(context.Context, *config.Profile, string) (remote.FileInfo, error) {
+	f.stats.Add(1)
 	return remote.FileInfo{Name: "file", Path: "/file", Size: int64(len(f.download)), ModeBits: 0o600, IsRegular: true}, nil
 }
 
@@ -442,5 +446,32 @@ func TestSFTPEncoding(t *testing.T) {
 	})
 	if err != nil || download.IsError {
 		t.Fatalf("download result=%+v err=%v", download, err)
+	}
+}
+
+func TestSFTPRejectsInvalidInputsBeforeCallingBackend(t *testing.T) {
+	backend := &fakeBackend{download: []byte("content\n")}
+	client := connectClient(t, configuredService(t, backend))
+
+	result, err := client.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "sftp-read", Arguments: map[string]any{"remotePath": "/file", "offset": -1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError || backend.reads.Load() != 0 {
+		t.Fatalf("negative offset result=%+v backend reads=%d", result, backend.reads.Load())
+	}
+
+	result, err = client.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "sftp-apply-patch", Arguments: map[string]any{
+			"remotePath": "/file", "expectedSha256": "not-a-checksum", "patch": "@@ -1 +1 @@\n-content\n+updated\n",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError || backend.stats.Load() != 0 {
+		t.Fatalf("bad checksum result=%+v backend stats=%d", result, backend.stats.Load())
 	}
 }

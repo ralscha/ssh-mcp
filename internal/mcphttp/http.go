@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -47,12 +46,14 @@ func Handler(cfg *config.Config, server *mcp.Server) http.Handler {
 	})
 	auth := &authorizer{cfg: cfg, client: &http.Client{Timeout: 10 * time.Second}, cache: make(map[string]introspectionResult)}
 	mux := http.NewServeMux()
-	metadataPath := protectedResourceMetadataPath(cfg.HTTP.ResourceURL)
-	mux.HandleFunc(metadataPath, auth.metadata)
-	if metadataPath != "/.well-known/oauth-protected-resource" {
-		// Keep the pathless endpoint for older clients while serving the RFC 9728
-		// path-derived endpoint used by current MCP clients.
-		mux.HandleFunc("/.well-known/oauth-protected-resource", auth.metadata)
+	if cfg.HTTP.AuthMode == "oauth" {
+		metadataPath := config.ProtectedResourceMetadataPath(cfg.HTTP.ResourceURL)
+		mux.HandleFunc(metadataPath, auth.metadata)
+		if metadataPath != "/.well-known/oauth-protected-resource" {
+			// Keep the pathless endpoint for older clients while serving the RFC 9728
+			// path-derived endpoint used by current MCP clients.
+			mux.HandleFunc("/.well-known/oauth-protected-resource", auth.metadata)
+		}
 	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -149,17 +150,25 @@ func (a *authorizer) originAllowed(r *http.Request) bool {
 	if origin == "" {
 		return true
 	}
-	if slices.Contains(a.cfg.HTTP.AllowedOrigins, origin) {
-		return true
-	}
-	parsed, err := url.Parse(origin)
-	if err != nil {
+	parsed, canonical, ok := canonicalOrigin(origin)
+	if !ok {
 		return false
 	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return false
+	for _, allowed := range a.cfg.HTTP.AllowedOrigins {
+		if _, configured, valid := canonicalOrigin(allowed); valid && configured == canonical {
+			return true
+		}
 	}
 	return strings.EqualFold(parsed.Host, r.Host) && ((parsed.Scheme == "https" && r.TLS != nil) || (parsed.Scheme == "http" && r.TLS == nil))
+}
+
+func canonicalOrigin(raw string) (*url.URL, string, bool) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return nil, "", false
+	}
+	canonical := strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
+	return parsed, canonical, true
 }
 
 func bearerToken(header string) (string, bool) {
@@ -302,17 +311,9 @@ func (a *authorizer) oauthChallenge(code, description string) string {
 
 func (a *authorizer) metadataURL() string {
 	if resource, err := url.Parse(a.cfg.HTTP.ResourceURL); err == nil && resource.IsAbs() {
-		return resource.Scheme + "://" + resource.Host + protectedResourceMetadataPath(a.cfg.HTTP.ResourceURL)
+		return resource.Scheme + "://" + resource.Host + config.ProtectedResourceMetadataPath(a.cfg.HTTP.ResourceURL)
 	}
 	return "/.well-known/oauth-protected-resource"
-}
-
-func protectedResourceMetadataPath(resourceURL string) string {
-	resource, err := url.Parse(resourceURL)
-	if err != nil || strings.Trim(resource.Path, "/") == "" {
-		return "/.well-known/oauth-protected-resource"
-	}
-	return "/.well-known/oauth-protected-resource/" + strings.TrimLeft(resource.EscapedPath(), "/")
 }
 
 func escapeAuthParam(value string) string {

@@ -69,6 +69,9 @@ func New(stateFile string, retention time.Duration, maxJobs int) (*Manager, erro
 }
 
 func (m *Manager) Start(profile, command string, runner Runner, notify Notify) (Job, error) {
+	if runner == nil {
+		return Job{}, errors.New("job runner is required")
+	}
 	m.mu.Lock()
 	m.pruneLocked(time.Now().UTC())
 	if len(m.jobs) >= m.maxJobs {

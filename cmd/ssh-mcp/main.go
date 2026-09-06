@@ -29,13 +29,12 @@ func main() {
 func run(args []string) error {
 	flags := flag.NewFlagSet("ssh-mcp", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	defaultConfig, err := config.DefaultPath()
-	if err != nil {
-		return err
-	}
-	configPath := flags.String("config", defaultConfig, "path to TOML configuration")
+	configPath := flags.String("config", "", "path to TOML configuration (defaults to the platform config directory)")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if flags.NArg() != 0 {
@@ -45,12 +44,20 @@ func run(args []string) error {
 		fmt.Println("ssh-mcp " + app.ServerVersion())
 		return nil
 	}
+	defaultConfig, err := config.DefaultPath()
+	if err != nil {
+		return err
+	}
+	usingDefaultConfig := *configPath == "" || *configPath == defaultConfig
+	if *configPath == "" {
+		*configPath = defaultConfig
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && *configPath == defaultConfig {
+		if errors.Is(err, os.ErrNotExist) && usingDefaultConfig {
 			cfg = config.Empty()
-			log.Printf("starting unconfigured; expected config at %s", defaultConfig)
+			log.Printf("starting unconfigured; expected config at %s", *configPath)
 		} else {
 			return err
 		}

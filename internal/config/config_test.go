@@ -12,7 +12,7 @@ import (
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil { //nolint:gosec // path is constrained to t.TempDir
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
@@ -278,6 +278,98 @@ user = "deploy"
 	}
 	if cfg.HTTP.AuthMode != "oauth" || len(cfg.HTTP.RequiredScopes) != 1 {
 		t.Fatalf("HTTP config = %+v", cfg.HTTP)
+	}
+}
+
+func TestHTTPNormalizesOriginsAndRejectsReservedPaths(t *testing.T) {
+	cfg := Empty()
+	cfg.HTTP.AllowedOrigins = []string{"https://CLIENT.Example/"}
+	if err := cfg.normalizeHTTP(); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.HTTP.AllowedOrigins[0]; got != "https://client.example" {
+		t.Fatalf("normalized origin = %q", got)
+	}
+
+	cfg = Empty()
+	cfg.HTTP.Path = "/healthz"
+	if err := cfg.normalizeHTTP(); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("health endpoint collision error = %v, want reserved-path error", err)
+	}
+
+	t.Setenv("TEST_OAUTH_ID", "id")
+	t.Setenv("TEST_OAUTH_SECRET", "secret")
+	for _, reserved := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"} {
+		cfg = Empty()
+		cfg.HTTP.Enabled = true
+		cfg.HTTP.AuthMode = "oauth"
+		cfg.HTTP.Path = reserved
+		cfg.HTTP.ResourceURL = "https://ssh.example/mcp"
+		cfg.HTTP.AuthorizationServers = []string{"https://login.example"}
+		cfg.HTTP.IntrospectionURL = "https://login.example/introspect"
+		cfg.HTTP.OAuthClientIDEnv = "TEST_OAUTH_ID"
+		cfg.HTTP.OAuthClientSecretEnv = "TEST_OAUTH_SECRET"
+		if err := cfg.normalizeHTTP(); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("metadata collision for %q error = %v, want reserved-path error", reserved, err)
+		}
+	}
+}
+
+func TestHTTPPathRejectsInvalidLiteralPaths(t *testing.T) {
+	for _, invalid := range []string{"/mcp%2Fnested", "/mcp path", "/mcp\npath", "//mcp", "/nested/../mcp"} {
+		cfg := Empty()
+		cfg.HTTP.Path = invalid
+		if err := cfg.normalizeHTTP(); err == nil {
+			t.Fatalf("http.path %q was accepted", invalid)
+		}
+	}
+}
+
+func TestLoadValidatesAndNormalizesSHA256Fingerprints(t *testing.T) {
+	const valid = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	path := writeConfig(t, `
+[[profiles]]
+name = "dev"
+host = "example.test"
+user = "deploy"
+auth = "agent"
+agentKeyFingerprint = "  `+valid+`  "
+trustedHostKey = "`+valid+`"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Profiles[0].AgentKeyFingerprint != valid || cfg.Profiles[0].TrustedHostKey != valid {
+		t.Fatalf("fingerprints were not normalized: %+v", cfg.Profiles[0])
+	}
+
+	path = writeConfig(t, `
+[[profiles]]
+name = "dev"
+host = "example.test"
+user = "deploy"
+auth = "agent"
+trustedHostKey = "SHA256:not-a-digest"
+`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "trustedHostKey") {
+		t.Fatalf("invalid fingerprint error = %v", err)
+	}
+}
+
+func TestLoadRejectsMalformedTemplatePlaceholder(t *testing.T) {
+	path := writeConfig(t, `
+[[profiles]]
+name = "dev"
+host = "example.test"
+user = "deploy"
+
+[[profiles.commandTemplates]]
+name = "broken"
+command = "echo {{1invalid}}"
+`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "malformed placeholder") {
+		t.Fatalf("malformed template error = %v", err)
 	}
 }
 

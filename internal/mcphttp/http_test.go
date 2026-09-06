@@ -45,6 +45,21 @@ func TestStaticBearerAndOrigin(t *testing.T) {
 	}
 }
 
+func TestOriginCanonicalization(t *testing.T) {
+	cfg := config.Empty()
+	cfg.HTTP.AllowedOrigins = []string{"https://CLIENT.Example/"}
+	auth := &authorizer{cfg: cfg}
+	request := httptest.NewRequest(http.MethodPost, "http://server.example/mcp", nil)
+	request.Header.Set("Origin", "https://client.example")
+	if !auth.originAllowed(request) {
+		t.Fatal("equivalent configured origin was rejected")
+	}
+	request.Header.Set("Origin", "https://client.example/path")
+	if auth.originAllowed(request) {
+		t.Fatal("origin containing a path was accepted")
+	}
+}
+
 func TestAuthorizedStreamableHTTPHandshake(t *testing.T) {
 	t.Setenv("TEST_SSH_MCP_TOKEN", "correct-secret")
 	cfg := config.Empty()
@@ -108,7 +123,7 @@ func TestOAuthMetadataUsesResourcePath(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("metadata status = %d; body=%s", response.Code, response.Body.String())
 	}
-	if got := protectedResourceMetadataPath(cfg.HTTP.ResourceURL); got != "/.well-known/oauth-protected-resource/mcp" {
+	if got := config.ProtectedResourceMetadataPath(cfg.HTTP.ResourceURL); got != "/.well-known/oauth-protected-resource/mcp" {
 		t.Fatalf("metadata path = %q", got)
 	}
 	auth := &authorizer{cfg: cfg}

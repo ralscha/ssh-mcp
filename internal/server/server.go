@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -319,8 +318,12 @@ func (s *Service) upload(ctx context.Context, req *mcp.CallToolRequest, input up
 }
 
 func decodeContent(content, encoding string) ([]byte, error) {
-	switch strings.ToLower(encoding) {
-	case "", "utf8", "utf-8", "text":
+	encoding, err := normalizeContentEncoding(encoding)
+	if err != nil {
+		return nil, err
+	}
+	switch encoding {
+	case "utf8":
 		return []byte(content), nil
 	case "base64":
 		data, err := base64.StdEncoding.DecodeString(content)
@@ -328,9 +331,8 @@ func decodeContent(content, encoding string) ([]byte, error) {
 			return nil, fmt.Errorf("decode base64 content: %w", err)
 		}
 		return data, nil
-	default:
-		return nil, fmt.Errorf("encoding must be utf8 or base64")
 	}
+	return nil, fmt.Errorf("unsupported normalized encoding %q", encoding)
 }
 
 type downloadInput struct {
@@ -355,6 +357,9 @@ func (s *Service) download(ctx context.Context, _ *mcp.CallToolRequest, input do
 	if err := validateToolPath(input.RemotePath); err != nil {
 		return nil, downloadOutput{}, err
 	}
+	if _, err := normalizeContentEncoding(input.Encoding); err != nil {
+		return nil, downloadOutput{}, err
+	}
 	ctx, cancel := s.transferContext(ctx, profile)
 	defer cancel()
 	started := time.Now()
@@ -363,19 +368,9 @@ func (s *Service) download(ctx context.Context, _ *mcp.CallToolRequest, input do
 		_ = s.record(audit.Event{Action: "sftp-download", Profile: profile.Name, Target: input.RemotePath, Decision: "allowed", Outcome: "failed", DurationMS: time.Since(started).Milliseconds(), Error: err.Error()})
 		return nil, downloadOutput{}, err
 	}
-	encoding := strings.ToLower(input.Encoding)
-	var content string
-	switch encoding {
-	case "", "utf8", "utf-8", "text":
-		if !utf8.Valid(data) {
-			return nil, downloadOutput{}, fmt.Errorf("remote file is not valid UTF-8; retry with encoding=base64")
-		}
-		encoding = "utf8"
-		content = string(data)
-	case "base64":
-		content = base64.StdEncoding.EncodeToString(data)
-	default:
-		return nil, downloadOutput{}, fmt.Errorf("encoding must be utf8 or base64")
+	encoding, content, err := encodeContent(data, input.Encoding)
+	if err != nil {
+		return nil, downloadOutput{}, err
 	}
 	output := downloadOutput{
 		Profile: profile.Name, RemotePath: input.RemotePath, Encoding: encoding,

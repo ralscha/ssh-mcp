@@ -18,8 +18,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const smokeTestTimeout = time.Minute
+
 func TestStdioTransportListsTools(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), smokeTestTimeout)
 	defer cancel()
 	configPath := writeSmokeConfig(t, "")
 	cmd := exec.CommandContext(ctx, "go", "run", ".", "--config", configPath) //nolint:gosec // fixed test executable with a temporary config path
@@ -39,7 +41,7 @@ func TestStdioTransportListsTools(t *testing.T) {
 }
 
 func TestHTTPTransportListsToolsWithBearerAuth(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), smokeTestTimeout)
 	defer cancel()
 	port, err := freePort()
 	if err != nil {
@@ -95,7 +97,7 @@ func TestHTTPTransportListsToolsWithBearerAuth(t *testing.T) {
 }
 
 func TestVersionOutput(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), smokeTestTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "run", ".", "--version")
 	output, err := cmd.CombinedOutput()

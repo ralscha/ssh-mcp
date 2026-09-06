@@ -17,3 +17,9 @@ func TestIsCleanConnectionClose(t *testing.T) {
 		t.Fatal("arbitrary error was treated as clean")
 	}
 }
+
+func TestHelpReturnsCleanly(t *testing.T) {
+	if err := run([]string{"--help"}); err != nil {
+		t.Fatalf("run --help returned %v", err)
+	}
+}

@@ -10,11 +10,11 @@ import (
 )
 
 var forbiddenPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(^|[;&|]\s*)(sudo\s+)?(?:shutdown|reboot|poweroff|halt)(?:\s|$)`),
+	regexp.MustCompile(`(?i)(^|[;&|]\s*)(?:(?:/[^\s;&|]+/)?(?:sudo|env|command)\b[^;&|]*\s+)?(?:/[^\s;&|]+/)?(?:shutdown|reboot|poweroff|halt)(?:\s|$|[;&|])`),
 	regexp.MustCompile(`(?i)(^|[;&|]\s*)(sudo\s+)?mkfs(?:\.|\s|$)`),
 	regexp.MustCompile(`(?i)\bdd\s+[^;&|]*\bof\s*=\s*/dev/`),
 	regexp.MustCompile(`(?i)\brm\s+(?:-[a-z]*[rf][a-z]*\s+)+(?:--\s+)?/(?:\s|$|\*)`),
-	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b`),
+	regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n|]*\|\s*(?:(?:/[^\s;&|]+/)?(?:sudo|env|command)\b[^;&|]*\s+)?(?:/[^\s;&|]+/)?(?:sh|bash|zsh)\b`),
 	regexp.MustCompile(`(?i)>+\s*(?:/etc/(?:cron|systemd)|[^\s]*authorized_keys)`),
 	regexp.MustCompile(`(?i)\biptables\s+-F(?:\s|$)`),
 	regexp.MustCompile(`(?i)\bchmod\s+(?:-[Rr]\s+)?777\s+/(?:\s|$)`),

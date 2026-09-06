@@ -34,24 +34,43 @@ func applyUnifiedPatch(original, patch string) (string, error) {
 	cursor := 0
 	for _, hunk := range hunks {
 		start := hunk.oldStart - 1
-		if hunk.oldStart == 0 {
-			start = 0
+		if hunk.oldCount == 0 {
+			// A zero-length range starts after oldStart lines. This matters for
+			// insertions in the middle of a file (for example, -1,0 inserts
+			// between the first and second lines).
+			start = hunk.oldStart
 		}
 		if start < cursor || start > len(oldLines) {
 			return "", fmt.Errorf("patch hunk starts outside the current file at old line %d", hunk.oldStart)
 		}
 		output = append(output, oldLines[cursor:start]...)
 		cursor = start
+		newStart := hunk.newStart - 1
+		if hunk.newCount == 0 {
+			newStart = hunk.newStart
+		}
+		if newStart != len(output) {
+			expected := len(output) + 1
+			if hunk.newCount == 0 {
+				expected = len(output)
+			}
+			return "", fmt.Errorf("patch hunk has inconsistent new start at line %d; expected %d", hunk.newStart, expected)
+		}
 		oldSeen, newSeen := 0, 0
+		var previousPrefix byte
+		newNoFinalNewline := false
 		for _, line := range hunk.lines {
 			if line == `\ No newline at end of file` {
-				hadFinalNewline = false
+				if previousPrefix == '+' || previousPrefix == ' ' {
+					newNoFinalNewline = true
+				}
 				continue
 			}
 			if line == "" {
 				return "", fmt.Errorf("invalid empty patch line in hunk")
 			}
 			content := line[1:]
+			previousPrefix = line[0]
 			switch line[0] {
 			case ' ':
 				if cursor >= len(oldLines) || oldLines[cursor] != content {
@@ -77,6 +96,11 @@ func applyUnifiedPatch(original, patch string) (string, error) {
 		if oldSeen != hunk.oldCount || newSeen != hunk.newCount {
 			return "", fmt.Errorf("patch hunk count mismatch: header says -%d +%d, body has -%d +%d", hunk.oldCount, hunk.newCount, oldSeen, newSeen)
 		}
+		if start+hunk.oldCount == len(oldLines) {
+			// A hunk reaching the old EOF defines the new EOF. Normal unified
+			// diff lines carry a newline; the explicit marker removes it.
+			hadFinalNewline = len(output) > 0 && !newNoFinalNewline
+		}
 	}
 	output = append(output, oldLines[cursor:]...)
 	result := strings.Join(output, newline)
@@ -93,6 +117,9 @@ func parsePatch(patch string) ([]patchHunk, error) {
 	for i := 0; i < len(lines); {
 		line := lines[i]
 		if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "index ") || line == "" {
+			if len(hunks) > 0 && line != "" {
+				return nil, fmt.Errorf("patch must describe exactly one file")
+			}
 			i++
 			continue
 		}
@@ -100,14 +127,53 @@ func parsePatch(patch string) ([]patchHunk, error) {
 		if match == nil {
 			return nil, fmt.Errorf("expected unified diff hunk header at patch line %d", i+1)
 		}
-		hunk := patchHunk{oldStart: atoi(match[1]), oldCount: count(match[2]), newStart: atoi(match[3]), newCount: count(match[4])}
+		oldStart, err := patchNumber(match[1], 0)
+		if err != nil {
+			return nil, fmt.Errorf("invalid old start at patch line %d: %w", i+1, err)
+		}
+		oldCount, err := patchNumber(match[2], 1)
+		if err != nil {
+			return nil, fmt.Errorf("invalid old count at patch line %d: %w", i+1, err)
+		}
+		newStart, err := patchNumber(match[3], 0)
+		if err != nil {
+			return nil, fmt.Errorf("invalid new start at patch line %d: %w", i+1, err)
+		}
+		newCount, err := patchNumber(match[4], 1)
+		if err != nil {
+			return nil, fmt.Errorf("invalid new count at patch line %d: %w", i+1, err)
+		}
+		hunk := patchHunk{oldStart: oldStart, oldCount: oldCount, newStart: newStart, newCount: newCount}
 		i++
-		for i < len(lines) && !strings.HasPrefix(lines[i], "@@ ") {
-			if strings.HasPrefix(lines[i], "--- ") || strings.HasPrefix(lines[i], "+++ ") {
-				break
+		oldSeen, newSeen := 0, 0
+		for oldSeen < hunk.oldCount || newSeen < hunk.newCount {
+			if i >= len(lines) {
+				return nil, fmt.Errorf("patch hunk at line %d is incomplete", i)
 			}
-			hunk.lines = append(hunk.lines, lines[i])
+			bodyLine := lines[i]
+			if bodyLine == "" {
+				return nil, fmt.Errorf("invalid empty patch line in hunk at patch line %d", i+1)
+			}
+			switch bodyLine[0] {
+			case ' ':
+				oldSeen++
+				newSeen++
+			case '-':
+				oldSeen++
+			case '+':
+				newSeen++
+			default:
+				return nil, fmt.Errorf("invalid patch line prefix %q at patch line %d", bodyLine[0], i+1)
+			}
+			if oldSeen > hunk.oldCount || newSeen > hunk.newCount {
+				return nil, fmt.Errorf("patch hunk count exceeds its header at patch line %d", i+1)
+			}
+			hunk.lines = append(hunk.lines, bodyLine)
 			i++
+			if i < len(lines) && lines[i] == `\ No newline at end of file` {
+				hunk.lines = append(hunk.lines, lines[i])
+				i++
+			}
 		}
 		hunks = append(hunks, hunk)
 	}
@@ -117,14 +183,13 @@ func parsePatch(patch string) ([]patchHunk, error) {
 	return hunks, nil
 }
 
-func atoi(value string) int {
-	n, _ := strconv.Atoi(value)
-	return n
-}
-
-func count(value string) int {
+func patchNumber(value string, fallback int) (int, error) {
 	if value == "" {
-		return 1
+		return fallback, nil
 	}
-	return atoi(value)
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }

@@ -83,10 +83,13 @@ func (s *Service) statPath(ctx context.Context, _ *mcp.CallToolRequest, input pa
 	}
 	ctx, cancel := s.transferContext(ctx, profile)
 	defer cancel()
+	started := time.Now()
 	info, err := s.backend.Stat(ctx, profile, input.RemotePath)
 	if err != nil {
+		_ = s.record(audit.Event{Action: "sftp-stat", Profile: profile.Name, Target: input.RemotePath, Decision: "allowed", Outcome: "failed", DurationMS: time.Since(started).Milliseconds(), Error: err.Error()})
 		return nil, statOutput{}, err
 	}
+	_ = s.record(audit.Event{Action: "sftp-stat", Profile: profile.Name, Target: input.RemotePath, Decision: "allowed", Outcome: "completed", DurationMS: time.Since(started).Milliseconds()})
 	return nil, statOutput{Profile: profile.Name, File: info}, nil
 }
 
@@ -115,6 +118,12 @@ func (s *Service) readFileRange(ctx context.Context, _ *mcp.CallToolRequest, inp
 	if err := validateToolPath(input.RemotePath); err != nil {
 		return nil, readRangeOutput{}, err
 	}
+	if input.Offset < 0 {
+		return nil, readRangeOutput{}, fmt.Errorf("offset must be non-negative")
+	}
+	if _, err := normalizeContentEncoding(input.Encoding); err != nil {
+		return nil, readRangeOutput{}, err
+	}
 	limit := s.cfg.TransferLimit(profile)
 	if input.Length == 0 {
 		input.Length = limit
@@ -140,16 +149,30 @@ func (s *Service) readFileRange(ctx context.Context, _ *mcp.CallToolRequest, inp
 }
 
 func encodeContent(data []byte, encoding string) (string, string, error) {
-	switch strings.ToLower(encoding) {
-	case "", "utf8", "utf-8", "text":
+	encoding, err := normalizeContentEncoding(encoding)
+	if err != nil {
+		return "", "", err
+	}
+	switch encoding {
+	case "utf8":
 		if !utf8.Valid(data) {
 			return "", "", fmt.Errorf("remote bytes are not valid UTF-8; retry with encoding=base64")
 		}
 		return "utf8", string(data), nil
 	case "base64":
 		return "base64", base64.StdEncoding.EncodeToString(data), nil
+	}
+	return "", "", fmt.Errorf("unsupported normalized encoding %q", encoding)
+}
+
+func normalizeContentEncoding(encoding string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "utf8", "utf-8", "text":
+		return "utf8", nil
+	case "base64":
+		return "base64", nil
 	default:
-		return "", "", fmt.Errorf("encoding must be utf8 or base64")
+		return "", fmt.Errorf("encoding must be utf8 or base64")
 	}
 }
 
@@ -210,6 +233,10 @@ func (s *Service) applyPatch(ctx context.Context, req *mcp.CallToolRequest, inpu
 	if input.ExpectedSHA256 == "" {
 		return nil, applyPatchOutput{}, fmt.Errorf("expectedSha256 is required; call sftp-checksum first")
 	}
+	want, err := normalizeSHA256(input.ExpectedSHA256)
+	if err != nil {
+		return nil, applyPatchOutput{}, fmt.Errorf("expectedSha256: %w", err)
+	}
 	if int64(len(input.Patch)) > s.cfg.TransferLimit(profile) {
 		return nil, applyPatchOutput{}, fmt.Errorf("patch exceeds profile transfer limit")
 	}
@@ -231,7 +258,6 @@ func (s *Service) applyPatch(ctx context.Context, req *mcp.CallToolRequest, inpu
 	}
 	before := sha256.Sum256(data)
 	beforeHex := hex.EncodeToString(before[:])
-	want := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(input.ExpectedSHA256)), "sha256:")
 	if beforeHex != want {
 		return nil, applyPatchOutput{}, fmt.Errorf("remote file changed: expected SHA-256 %s, received %s", want, beforeHex)
 	}
@@ -269,6 +295,15 @@ func (s *Service) applyPatch(ctx context.Context, req *mcp.CallToolRequest, inpu
 	}
 	output := applyPatchOutput{Profile: profile.Name, RemotePath: input.RemotePath, PreviousSHA256: beforeHex, SHA256: afterHex, Bytes: n}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Patched %s atomically; SHA-256 %s", input.RemotePath, afterHex)}}}, output, nil
+}
+
+func normalizeSHA256(value string) (string, error) {
+	value = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), "sha256:")
+	digest, err := hex.DecodeString(value)
+	if err != nil || len(digest) != sha256.Size {
+		return "", fmt.Errorf("must be a 64-character hexadecimal SHA-256 digest")
+	}
+	return hex.EncodeToString(digest), nil
 }
 
 type mkdirInput struct {

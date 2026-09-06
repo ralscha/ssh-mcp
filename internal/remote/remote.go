@@ -290,6 +290,9 @@ func cloneTime(t *time.Time) *time.Time {
 func (c *connection) getClient(ctx context.Context) (*ssh.Client, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if c.client != nil {
 		return c.client, nil
 	}
@@ -320,6 +323,11 @@ func (c *connection) dial(ctx context.Context) (*ssh.Client, error) {
 }
 
 func (c *connection) dialObserved(ctx context.Context, observed *string, hostKeyError *error) (*ssh.Client, error) {
+	// ConnectTimeoutMS is a budget for the complete connection attempt, including
+	// proxy traversal and the SSH handshake, rather than a fresh budget for each
+	// stage.
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(c.cfg.Defaults.ConnectTimeoutMS)*time.Millisecond)
+	defer cancel()
 	auth, cleanup, err := authMethods(ctx, c.profile)
 	if err != nil {
 		return nil, err

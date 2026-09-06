@@ -70,3 +70,13 @@ func TestToolErrorResultIsACompletedTask(t *testing.T) {
 		t.Fatalf("job = %+v, want completed tool error", job)
 	}
 }
+
+func TestStartRejectsMissingRunner(t *testing.T) {
+	m, err := New("", time.Hour, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Start("dev", "ignored", nil, nil); err == nil {
+		t.Fatal("missing runner was accepted")
+	}
+}

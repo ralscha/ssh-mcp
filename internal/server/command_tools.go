@@ -367,7 +367,10 @@ func (s *Service) startBackground(ctx context.Context, req *mcp.CallToolRequest,
 			exit := result.ExitCode
 			event.ExitCode, event.Outcome, event.Error = &exit, commandOutcome(result), result.Error
 		}
-		_ = s.record(event)
+		if auditErr := s.record(event); auditErr != nil {
+			auditErr = fmt.Errorf("record background command completion: %w", auditErr)
+			return result, errors.Join(runErr, auditErr)
+		}
 		return result, runErr
 	}, notify)
 	return job, err

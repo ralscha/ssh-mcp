@@ -134,17 +134,11 @@ func (w *Writer) Read(limit int) ([]Event, error) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	events, _, err := readAndVerify(w.path)
-	if err != nil {
-		return nil, err
-	}
 	if limit <= 0 {
 		limit = 100
 	}
-	if len(events) > limit {
-		events = events[len(events)-limit:]
-	}
-	return events, nil
+	events, _, err := readAndVerify(w.path, limit)
+	return events, err
 }
 
 func (w *Writer) Verify() error {
@@ -157,7 +151,7 @@ func (w *Writer) Verify() error {
 }
 
 func (w *Writer) verifyLocked() error {
-	_, previous, err := readAndVerify(w.path)
+	_, previous, err := readAndVerify(w.path, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		w.previous = ""
 		return nil
@@ -169,13 +163,14 @@ func (w *Writer) verifyLocked() error {
 	return nil
 }
 
-func readAndVerify(path string) ([]Event, string, error) {
+func readAndVerify(path string, retain int) ([]Event, string, error) {
 	f, err := os.Open(path) //nolint:gosec // path is the administrator-configured audit log
 	if err != nil {
 		return nil, "", err
 	}
 	defer func() { _ = f.Close() }()
 	var events []Event
+	nextRetained := 0
 	previous := ""
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -199,10 +194,20 @@ func readAndVerify(path string) ([]Event, string, error) {
 		}
 		event.Hash = want
 		previous = want
-		events = append(events, event)
+		if retain > 0 {
+			if len(events) == retain {
+				events[nextRetained] = event
+				nextRetained = (nextRetained + 1) % retain
+			} else {
+				events = append(events, event)
+			}
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, "", err
+	}
+	if nextRetained > 0 {
+		events = append(events[nextRetained:], events[:nextRetained]...)
 	}
 	return events, previous, nil
 }

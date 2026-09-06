@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
@@ -74,5 +75,15 @@ func TestIsConnectionFailure(t *testing.T) {
 	}
 	if isConnectionFailure(errors.New("ssh: rejected: resource shortage")) {
 		t.Fatal("channel rejection was mistaken for a dead connection")
+	}
+}
+
+func TestGetClientDoesNotReturnCachedConnectionToCancelledCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := &connection{client: &ssh.Client{}}
+	client, err := c.getClient(ctx)
+	if !errors.Is(err, context.Canceled) || client != nil {
+		t.Fatalf("getClient() = (%v, %v), want cancellation", client, err)
 	}
 }

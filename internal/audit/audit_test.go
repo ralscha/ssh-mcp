@@ -26,6 +26,13 @@ func TestWriterChainsAndRedacts(t *testing.T) {
 	if len(events) != 2 || events[1].Previous != events[0].Hash {
 		t.Fatalf("events are not chained: %+v", events)
 	}
+	recent, err := w.Read(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 1 || recent[0].ID != events[1].ID {
+		t.Fatalf("recent events = %+v, want only the newest event", recent)
+	}
 	if strings.Contains(events[0].Command, "abc") || strings.Contains(events[0].Command, "private-123") {
 		t.Fatalf("secret was not redacted: %q", events[0].Command)
 	}

@@ -1,14 +1,17 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 )
@@ -284,8 +287,12 @@ func (c *Config) normalizeAndValidate() error {
 		if p.AgentKeyFingerprint != "" && p.Auth != "agent" {
 			return fmt.Errorf("profile %q: agentKeyFingerprint requires auth=agent", p.Name)
 		}
-		if p.AgentKeyFingerprint != "" && !strings.HasPrefix(p.AgentKeyFingerprint, "SHA256:") {
-			return fmt.Errorf("profile %q: agentKeyFingerprint must be an SHA256 fingerprint", p.Name)
+		if p.AgentKeyFingerprint != "" {
+			fingerprint, err := normalizeSHA256Fingerprint(p.AgentKeyFingerprint)
+			if err != nil {
+				return fmt.Errorf("profile %q agentKeyFingerprint: %w", p.Name, err)
+			}
+			p.AgentKeyFingerprint = fingerprint
 		}
 		if err := validateApprovalMode(fmt.Sprintf("profile %q approvalMode", p.Name), p.ApprovalMode); err != nil {
 			return err
@@ -309,6 +316,13 @@ func (c *Config) normalizeAndValidate() error {
 		}
 		if p.InsecureSkipHostKey && p.TrustedHostKey != "" {
 			return fmt.Errorf("profile %q: insecureSkipHostKey and trustedHostKey cannot both be set", p.Name)
+		}
+		if p.TrustedHostKey != "" {
+			fingerprint, err := normalizeSHA256Fingerprint(p.TrustedHostKey)
+			if err != nil {
+				return fmt.Errorf("profile %q trustedHostKey: %w", p.Name, err)
+			}
+			p.TrustedHostKey = fingerprint
 		}
 		if err := validatePositiveOverride(p.Name, "commandTimeoutMs", p.CommandTimeoutMS, false); err != nil {
 			return err
@@ -377,8 +391,20 @@ func (c *Config) normalizeHTTP() error {
 	if c.HTTP.Path == "" {
 		c.HTTP.Path = "/mcp"
 	}
-	if !strings.HasPrefix(c.HTTP.Path, "/") || strings.ContainsAny(c.HTTP.Path, "{}?#\x00") {
-		return errors.New("http.path must be a literal URL path starting with / and contain no wildcard, query, fragment, or NUL characters")
+	parsedPath, pathErr := url.ParseRequestURI(c.HTTP.Path)
+	invalidPathRune := strings.IndexFunc(c.HTTP.Path, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0
+	if pathErr != nil || parsedPath.RawQuery != "" || parsedPath.Fragment != "" || !strings.HasPrefix(c.HTTP.Path, "/") || strings.ContainsAny(c.HTTP.Path, "{}?#%") || invalidPathRune {
+		return errors.New("http.path must be a valid literal URL path starting with / and contain no wildcard, escape, whitespace, control, query, or fragment characters")
+	}
+	cleanPath := path.Clean(c.HTTP.Path)
+	if strings.HasSuffix(c.HTTP.Path, "/") && cleanPath != "/" {
+		cleanPath += "/"
+	}
+	if cleanPath != c.HTTP.Path {
+		return errors.New("http.path must not contain duplicate slashes or dot segments")
+	}
+	if c.HTTP.Path == "/healthz" {
+		return errors.New("http.path conflicts with the reserved health endpoint /healthz")
 	}
 	if c.HTTP.TokenEnv == "" {
 		c.HTTP.TokenEnv = "SSH_MCP_HTTP_TOKEN"
@@ -429,10 +455,17 @@ func (c *Config) normalizeHTTP() error {
 			}
 		}
 	}
-	for _, raw := range c.HTTP.AllowedOrigins {
+	for i, raw := range c.HTTP.AllowedOrigins {
 		parsed, err := url.Parse(raw)
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 			return fmt.Errorf("http.allowedOrigins entry %q must be an HTTP(S) origin without path, query, fragment, or user information", raw)
+		}
+		c.HTTP.AllowedOrigins[i] = strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
+	}
+	if c.HTTP.Enabled && c.HTTP.AuthMode == "oauth" {
+		metadataPath := ProtectedResourceMetadataPath(c.HTTP.ResourceURL)
+		if c.HTTP.Path == metadataPath || c.HTTP.Path == "/.well-known/oauth-protected-resource" {
+			return fmt.Errorf("http.path conflicts with the reserved OAuth metadata endpoint %s", c.HTTP.Path)
 		}
 	}
 	if (c.HTTP.TLSCertFile == "") != (c.HTTP.TLSKeyFile == "") {
@@ -459,6 +492,28 @@ func (c *Config) normalizeHTTP() error {
 		}
 	}
 	return nil
+}
+
+func normalizeSHA256Fingerprint(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "SHA256:") {
+		return "", errors.New("must start with the SHA256 prefix")
+	}
+	digest, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(value, "SHA256:"))
+	if err != nil || len(digest) != 32 {
+		return "", errors.New("must contain an unpadded base64-encoded 32-byte SHA-256 digest")
+	}
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(digest), nil
+}
+
+// ProtectedResourceMetadataPath returns the RFC 9728 metadata route for an
+// OAuth protected resource URL.
+func ProtectedResourceMetadataPath(resourceURL string) string {
+	resource, err := url.Parse(resourceURL)
+	if err != nil || strings.Trim(resource.Path, "/") == "" {
+		return "/.well-known/oauth-protected-resource"
+	}
+	return "/.well-known/oauth-protected-resource/" + strings.TrimLeft(resource.EscapedPath(), "/")
 }
 
 func (c *Config) ApprovalMode(p *Profile) string {

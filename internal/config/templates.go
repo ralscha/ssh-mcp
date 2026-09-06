@@ -8,8 +8,9 @@ import (
 )
 
 var (
-	templateNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-	placeholderPattern  = regexp.MustCompile(`\{\{([A-Za-z][A-Za-z0-9_-]*)\}\}`)
+	templateNamePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	parameterNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+	placeholderPattern   = regexp.MustCompile(`\{\{([A-Za-z][A-Za-z0-9_-]*)\}\}`)
 )
 
 func validateTemplates(p *Profile) error {
@@ -28,7 +29,7 @@ func validateTemplates(p *Profile) error {
 		}
 		declared := make(map[string]bool, len(t.Parameters))
 		for _, name := range t.Parameters {
-			if !regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`).MatchString(name) {
+			if !parameterNamePattern.MatchString(name) {
 				return fmt.Errorf("profile %q command template %q: invalid parameter %q", p.Name, t.Name, name)
 			}
 			if declared[name] {
@@ -42,6 +43,10 @@ func validateTemplates(p *Profile) error {
 			if !declared[match[1]] {
 				return fmt.Errorf("profile %q command template %q: placeholder %q is not declared", p.Name, t.Name, match[1])
 			}
+		}
+		withoutPlaceholders := placeholderPattern.ReplaceAllString(t.Command, "")
+		if strings.Contains(withoutPlaceholders, "{{") || strings.Contains(withoutPlaceholders, "}}") {
+			return fmt.Errorf("profile %q command template %q: malformed placeholder", p.Name, t.Name)
 		}
 		for _, name := range t.Parameters {
 			if !used[name] {
