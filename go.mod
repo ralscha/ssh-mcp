@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/pkg/sftp v1.13.11
+	github.com/pkg/sftp v1.13.12
 	github.com/xanzy/ssh-agent v0.3.3
 	golang.org/x/crypto v0.58.0
 )
